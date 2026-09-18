@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { isValidCatalogVersion } from "./catalog"
 import {
   compareDirectoryAddedAt,
   DEFAULT_DIRECTORY_BROWSE_SETTINGS,
@@ -16,11 +17,14 @@ import {
   directorySettings,
   directoryUpdateStatusRpc,
   getDirectoryAddedDateBadge,
+  getInstallationStateLabel,
   getInstallCommand,
   getInstallRef,
   getRepositoryUrl,
   getRepositoryUrlAtRef,
   getSiteUrl,
+  getUpdateReviewDetails,
+  installedPluginSchema,
   isDefaultDirectoryBrowseView,
   isDirectoryAddedAtKnown,
   isOfficialPlugin,
@@ -54,11 +58,40 @@ describe("plugin install targets", () => {
       getInstallCommand({
         repo: "paseo-cafe/paseo-cafe",
         path: "plugin",
+        security: {
+          status: "passed",
+          blockingFindings: 0,
+          advisoryFindings: 0,
+          commit: "a".repeat(40),
+        },
       })
-    ).toBe("paseo plugin add paseo-cafe/paseo-cafe --path plugin")
+    ).toBe(
+      `paseo plugin add paseo-cafe/paseo-cafe --ref ${"a".repeat(40)} --path plugin`
+    )
+  })
+  it("uses npm only when the runtime supports it", () => {
+    const entry = {
+      repo: "paseo-cafe/paseo-cafe",
+      path: "plugin",
+      package: "@paseo-cafe/plugin",
+      version: "1.2.3",
+      security: {
+        status: "passed" as const,
+        blockingFindings: 0,
+        advisoryFindings: 0,
+        commit: "a".repeat(40),
+      },
+    }
+
+    expect(getInstallCommand(entry)).toBe(
+      `paseo plugin add paseo-cafe/paseo-cafe --ref ${"a".repeat(40)} --path plugin`
+    )
+    expect(getInstallCommand(entry, true)).toBe(
+      "paseo plugin add npm:@paseo-cafe/plugin@1.2.3"
+    )
   })
 
-  it("tracks the default branch while repository links pin the scanned commit", () => {
+  it("pins Git installs and repository links to the scanned commit", () => {
     const commit = "a".repeat(40)
     const security = {
       status: "passed" as const,
@@ -70,9 +103,11 @@ describe("plugin install targets", () => {
       getInstallCommand({
         repo: "paseo-cafe/paseo-cafe",
         path: "plugin",
-        repoMeta: { defaultBranch: "main" },
+        security,
       })
-    ).toBe("paseo plugin add paseo-cafe/paseo-cafe --ref main --path plugin")
+    ).toBe(
+      `paseo plugin add paseo-cafe/paseo-cafe --ref ${commit} --path plugin`
+    )
     expect(
       getRepositoryUrl({
         repo: "paseo-cafe/paseo-cafe",
@@ -103,19 +138,101 @@ describe("plugin install targets", () => {
       getInstallCommand({
         repo: "paseo-cafe/paseo-cafe",
         path: "bad; echo pwn",
+        security: {
+          status: "passed",
+          blockingFindings: 0,
+          advisoryFindings: 0,
+          commit: "a".repeat(40),
+        },
       })
     ).toBeUndefined()
   })
 
-  it("omits unusable branch metadata instead of rejecting a valid target", () => {
+  it("withholds commands when no immutable revision is available", () => {
     expect(getInstallRef("release@{bad")).toBeUndefined()
     expect(
       getInstallCommand({
         repo: "paseo-cafe/paseo-cafe",
         path: "plugin",
-        repoMeta: { defaultBranch: "release@{bad" },
       })
-    ).toBe("paseo plugin add paseo-cafe/paseo-cafe --path plugin")
+    ).toBeUndefined()
+  })
+  it("requires npm metadata and security to match the install target", () => {
+    const integrity = `sha512-${"b".repeat(86)}`
+    const npmEntry = {
+      ...validEntry,
+      package: "@owner/plugin",
+      npm: { package: "@owner/plugin", version: "1.2.3", integrity },
+      npmSecurity: {
+        status: "passed" as const,
+        blockingFindings: 0,
+        advisoryFindings: 0,
+        version: "1.2.3",
+        integrity,
+      },
+    }
+
+    expect(directoryEntrySchema.safeParse(npmEntry).success).toBe(true)
+    expect(
+      directoryEntrySchema.safeParse({
+        ...npmEntry,
+        npmSecurity: { ...npmEntry.npmSecurity, version: "1.2.4" },
+      }).success
+    ).toBe(false)
+    expect(
+      directoryEntrySchema.safeParse({
+        ...npmEntry,
+        npmSecurity: { ...npmEntry.npmSecurity, status: "failed" },
+      }).success
+    ).toBe(false)
+    expect(
+      directoryEntrySchema.safeParse({
+        ...npmEntry,
+        npmSecurity: { ...npmEntry.npmSecurity, blockingFindings: 1 },
+      }).success
+    ).toBe(false)
+  })
+  it("shows the exact npm package and version in update review", () => {
+    const installation = installedPluginSchema.parse({
+      id: "plugin",
+      path: "/plugins/plugin",
+      enabled: true,
+      status: "running",
+      source: "npm",
+      packageName: "@owner/plugin",
+      version: "1.2.3",
+      management: "reviewed",
+    })
+
+    expect(getUpdateReviewDetails(installation, { version: "1.3.0" })).toEqual({
+      identity: "npm:@owner/plugin",
+      revision: "1.2.3 → 1.3.0",
+      review: "Review npm package @owner/plugin@1.3.0 before updating.",
+    })
+  })
+  it("labels available npm updates explicitly", () => {
+    const installation = installedPluginSchema.parse({
+      id: "plugin",
+      path: "/plugins/plugin",
+      enabled: true,
+      status: "running",
+      source: "npm",
+      packageName: "@owner/plugin",
+      version: "1.2.3",
+      management: "reviewed",
+      updateState: "available",
+    })
+
+    expect(getInstallationStateLabel(installation)).toBe(
+      "Update available from npm"
+    )
+  })
+
+  it("rejects non-canonical npm versions", () => {
+    expect(isValidCatalogVersion("1.2.3")).toBe(true)
+    expect(isValidCatalogVersion("1.2.3-beta.1+build.7")).toBe(true)
+    expect(isValidCatalogVersion("1.2.3-01")).toBe(false)
+    expect(isValidCatalogVersion("01.2.3")).toBe(false)
   })
 
   it("rejects unsafe targets while parsing an untrusted catalog", () => {

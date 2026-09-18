@@ -21,14 +21,17 @@ import {
   getCatalogAddedDateBadge,
   getCatalogInstallCommand,
   getCatalogInstallRef,
+  getCatalogNpmInstallCommand,
   getCatalogRepositoryOwner,
   getCatalogRepositoryUrl,
   isCatalogAddedAtKnown,
   isOfficialCatalogPlugin,
   isValidCatalogCommit,
+  isValidCatalogPackage,
   isValidCatalogPath,
   isValidCatalogRef,
   isValidCatalogRepository,
+  isValidCatalogVersion,
   normalizeCatalogCategories,
   normalizeCatalogCategory,
   normalizeCatalogCategoryFilter,
@@ -408,110 +411,169 @@ const directoryHealthShape = {
  * data so the client can render it without re-fetching or re-parsing the
  * catalog payload.
  */
-export const directoryEntrySchema = z.object({
-  id: z.string().max(200),
-  repo: z
-    .string()
-    .max(200)
-    .refine(isValidCatalogRepository, "Expected a GitHub owner/repository"),
-  path: z
-    .string()
-    .max(500)
-    .refine(isValidCatalogPath, "Expected a safe repository subpath")
-    .optional(),
-  url: httpUrlSchema,
-  name: z.string().max(200),
-  description: z.string().max(4_000).default(""),
-  // Normalized package.json semver from the catalog scanner. Optional so an
-  // older catalog or a plugin without a valid version still remains browsable.
-  version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
-  author: z.string().max(200).optional(),
-  categories: z.array(z.string().max(100)).max(32).default([]),
-  platforms: z.array(z.string().max(100)).max(32).default([]),
-  caveats: z.array(z.string().max(1_000)).max(64).default([]),
-  license: z.string().max(100).optional(),
-  // e.g. ">=0.8.0" — the plugin's own `requirements.paseo` from its
-  // paseo-plugin.json (see scripts/scan.ts on the site). Highlighted the
-  // same way as a platform restriction, not left for someone to dig out of
-  // the README or the manifest themselves.
-  paseoVersionRequirement: z.string().max(200).optional(),
-  manifest: directoryManifestSchema.optional(),
-  images: z.array(httpUrlSchema).max(32).default([]),
-  // Raw README markdown from the scanner. Keep it optional so older catalog
-  // payloads still parse, and bound it so the companion plugin never retains
-  // or renders an unbounded blob.
-  readmeText: z.string().max(200_000).optional(),
-  // Pre-sanitized HTML rendered at scan time from the plugin's own README
-  // (see src/lib/markdown.ts on the site) — this plugin has no HTML renderer,
-  // so it's shown as stripped plain text (see stripHtml below) rather than
-  // with the site's original formatting.
-  installNotesHtml: z.string().max(100_000).optional(),
-  limitationsNotesHtml: z.string().max(100_000).optional(),
-  scanError: z.string().max(4_000).optional(),
-  // When the catalog listed this plugin (see PluginRecord.addedAt on the
-  // site). Kept as a plain bounded string like scannedAt below: a catalog
-  // that sends a malformed date should cost that plugin its place in the
-  // "Recently added" order, not drop the whole entry from the list.
-  addedAt: z.string().max(100).optional(),
-  scannedAt: z.string().max(100).optional(),
-  health: z.object(directoryHealthShape).optional(),
-  // Mirrors src/lib/plugin-schema.ts's pluginSecuritySchema invariants — a
-  // remote catalog is untrusted input, so the consumer must enforce at
-  // least as much as the producer: a non-"unknown" verdict must carry a
-  // real commit SHA, and "passed" cannot coexist with blocking findings.
-  // Without this, a hostile/compromised catalog could fabricate a green
-  // "Passed" badge directly above the install action.
-  security: z
-    .object({
-      status: z.enum(["passed", "failed", "unknown"]),
-      blockingFindings: z.number().int().nonnegative().max(1_000_000),
-      advisoryFindings: z.number().int().nonnegative().max(1_000_000),
-      scannedAt: z.string().max(100).optional(),
-      commit: z
-        .string()
-        .trim()
-        .regex(/^[0-9a-f]{40}$/i, "Must be a full Git commit SHA")
-        .transform((commit) => commit.toLowerCase())
-        .optional(),
-      reportUrl: httpUrlSchema.optional(),
-    })
-    .optional()
-    .superRefine((security, ctx) => {
-      if (!security) return
-      if (security.status !== "unknown" && security.commit === undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["commit"],
-          message: `status "${security.status}" requires a commit`,
-        })
-      }
-      if (security.status === "passed" && security.blockingFindings > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["blockingFindings"],
-          message: 'status "passed" cannot have blocking findings',
-        })
-      }
-    }),
-  owner: z
-    .object({
-      login: z.string().max(100).optional(),
-      avatarUrl: httpUrlSchema.optional(),
-    })
-    .optional(),
-  repoMeta: z
-    .object({
-      stars: z
-        .number()
-        .int()
-        .nonnegative()
-        .max(Number.MAX_SAFE_INTEGER)
-        .optional(),
-      defaultBranch: z.string().max(255).optional(),
-      pushedAt: z.string().max(100).optional(),
-    })
-    .optional(),
-})
+export const directoryEntrySchema = z
+  .object({
+    id: z.string().max(200),
+    repo: z
+      .string()
+      .max(200)
+      .refine(isValidCatalogRepository, "Expected a GitHub owner/repository"),
+    path: z
+      .string()
+      .max(500)
+      .refine(isValidCatalogPath, "Expected a safe repository subpath")
+      .optional(),
+    package: z
+      .string()
+      .max(214)
+      .refine(isValidCatalogPackage, "Expected a valid npm package name")
+      .optional(),
+    npm: z
+      .object({
+        package: z.string().max(214),
+        version: z
+          .string()
+          .max(CATALOG_VERSION_MAX_LENGTH)
+          .refine(isValidCatalogVersion, "Expected a semantic version"),
+        integrity: z.string().startsWith("sha512-"),
+      })
+      .optional(),
+    url: httpUrlSchema,
+    name: z.string().max(200),
+    description: z.string().max(4_000).default(""),
+    // Normalized package.json semver from the catalog scanner. Optional so an
+    // older catalog or a plugin without a valid version still remains browsable.
+    version: z
+      .string()
+      .max(CATALOG_VERSION_MAX_LENGTH)
+      .refine(isValidCatalogVersion, "Expected a semantic version")
+      .optional(),
+    author: z.string().max(200).optional(),
+    categories: z.array(z.string().max(100)).max(32).default([]),
+    platforms: z.array(z.string().max(100)).max(32).default([]),
+    caveats: z.array(z.string().max(1_000)).max(64).default([]),
+    license: z.string().max(100).optional(),
+    // e.g. ">=0.8.0" — the plugin's own `requirements.paseo` from its
+    // paseo-plugin.json (see scripts/scan.ts on the site). Highlighted the
+    // same way as a platform restriction, not left for someone to dig out of
+    // the README or the manifest themselves.
+    paseoVersionRequirement: z.string().max(200).optional(),
+    manifest: directoryManifestSchema.optional(),
+    images: z.array(httpUrlSchema).max(32).default([]),
+    // Raw README markdown from the scanner. Keep it optional so older catalog
+    // payloads still parse, and bound it so the companion plugin never retains
+    // or renders an unbounded blob.
+    readmeText: z.string().max(200_000).optional(),
+    // Pre-sanitized HTML rendered at scan time from the plugin's own README
+    // (see src/lib/markdown.ts on the site) — this plugin has no HTML renderer,
+    // so it's shown as stripped plain text (see stripHtml below) rather than
+    // with the site's original formatting.
+    installNotesHtml: z.string().max(100_000).optional(),
+    limitationsNotesHtml: z.string().max(100_000).optional(),
+    scanError: z.string().max(4_000).optional(),
+    // When the catalog listed this plugin (see PluginRecord.addedAt on the
+    // site). Kept as a plain bounded string like scannedAt below: a catalog
+    // that sends a malformed date should cost that plugin its place in the
+    // "Recently added" order, not drop the whole entry from the list.
+    addedAt: z.string().max(100).optional(),
+    scannedAt: z.string().max(100).optional(),
+    health: z.object(directoryHealthShape).optional(),
+    // Mirrors src/lib/plugin-schema.ts's pluginSecuritySchema invariants — a
+    // remote catalog is untrusted input, so the consumer must enforce at
+    // least as much as the producer: a non-"unknown" verdict must carry a
+    // real commit SHA, and "passed" cannot coexist with blocking findings.
+    // Without this, a hostile/compromised catalog could fabricate a green
+    // "Passed" badge directly above the install action.
+    security: z
+      .object({
+        status: z.enum(["passed", "failed", "unknown"]),
+        blockingFindings: z.number().int().nonnegative().max(1_000_000),
+        advisoryFindings: z.number().int().nonnegative().max(1_000_000),
+        scannedAt: z.string().max(100).optional(),
+        commit: z
+          .string()
+          .trim()
+          .regex(/^[0-9a-f]{40}$/i, "Must be a full Git commit SHA")
+          .transform((commit) => commit.toLowerCase())
+          .optional(),
+        reportUrl: httpUrlSchema.optional(),
+      })
+      .optional()
+      .superRefine((security, ctx) => {
+        if (!security) return
+        if (security.status !== "unknown" && security.commit === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["commit"],
+            message: `status "${security.status}" requires a commit`,
+          })
+        }
+        if (security.status === "passed" && security.blockingFindings > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["blockingFindings"],
+            message: 'status "passed" cannot have blocking findings',
+          })
+        }
+      }),
+    npmSecurity: z
+      .object({
+        status: z.enum(["passed", "failed", "unknown"]),
+        blockingFindings: z.number().int().nonnegative().max(1_000_000),
+        advisoryFindings: z.number().int().nonnegative().max(1_000_000),
+        scannedAt: z.string().max(100).optional(),
+        version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
+        integrity: z.string().startsWith("sha512-").optional(),
+      })
+      .optional()
+      .superRefine((security, ctx) => {
+        if (security?.status === "passed" && security.blockingFindings > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["blockingFindings"],
+            message: 'status "passed" cannot have blocking findings',
+          })
+        }
+      }),
+    owner: z
+      .object({
+        login: z.string().max(100).optional(),
+        avatarUrl: httpUrlSchema.optional(),
+      })
+      .optional(),
+    repoMeta: z
+      .object({
+        stars: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(Number.MAX_SAFE_INTEGER)
+          .optional(),
+        defaultBranch: z.string().max(255).optional(),
+        pushedAt: z.string().max(100).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((entry, ctx) => {
+    if (!entry.package) return
+    if (
+      !entry.version ||
+      !entry.npm ||
+      entry.npm.package !== entry.package ||
+      entry.npm.version !== entry.version ||
+      !entry.npmSecurity ||
+      entry.npmSecurity.status !== "passed" ||
+      entry.npmSecurity.version !== entry.version ||
+      entry.npmSecurity.integrity !== entry.npm.integrity
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["package"],
+        message:
+          "npm source requires matching version, integrity, and passed security scan",
+      })
+    }
+  })
 
 export type DirectoryEntry = z.infer<typeof directoryEntrySchema>
 
@@ -520,10 +582,13 @@ export const installedPluginSchema = z.object({
   path: z.string(),
   enabled: z.boolean(),
   status: z.enum(["running", "failed", "disabled"]),
-  source: z.enum(["git", "directory"]).default("directory"),
+  source: z.enum(["git", "directory", "npm"]).default("directory"),
   remote: z.string().optional(),
   ref: z.string().optional(),
   commit: z.string().optional(),
+  pluginPath: z.string().optional(),
+  packageName: z.string().optional(),
+  management: z.enum(["legacy", "reviewed"]).default("legacy"),
   version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
   latestCommit: z.string().optional(),
   updateState: z
@@ -533,6 +598,44 @@ export const installedPluginSchema = z.object({
 })
 
 export type InstalledPlugin = z.infer<typeof installedPluginSchema>
+export function getInstallationStateLabel(
+  installation: InstalledPlugin
+): string {
+  if (installation.source === "directory") return "Installed locally"
+  if (installation.updateState === "available") {
+    return installation.source === "npm"
+      ? "Update available from npm"
+      : "Update available"
+  }
+  if (installation.source === "npm") return "Installed from npm"
+  if (installation.updateState === "current") return "Up to date"
+  if (installation.updateState === "pinned") return "Pinned"
+  if (installation.updateState === "diverged") return "Source diverged"
+  return "Update status unavailable"
+}
+
+export function getUpdateReviewDetails(
+  installation: InstalledPlugin,
+  entry: Pick<DirectoryEntry, "version">
+): { identity: string; revision: string; review: string } {
+  if (installation.source === "npm") {
+    const packageName = installation.packageName ?? "npm package"
+    const current = installation.version ?? "unknown"
+    const target = entry.version ?? "unknown"
+    return {
+      identity: `npm:${packageName}`,
+      revision: `${current} → ${target}`,
+      review: `Review npm package ${packageName}@${target} before updating.`,
+    }
+  }
+  const current = installation.commit?.slice(0, 12) ?? "unknown"
+  const target = installation.latestCommit?.slice(0, 12) ?? "unknown"
+  return {
+    identity: `${installation.remote ?? installation.path}${installation.ref ? ` · ${installation.ref}` : ""}`,
+    revision: `${current} → ${target}`,
+    review: `Review commit ${target} before updating.`,
+  }
+}
 
 export const directoryListRpc = defineRpc({
   name: "directory.list",
@@ -545,6 +648,7 @@ export const directoryListRpc = defineRpc({
   output: z.object({
     plugins: z.array(directoryEntrySchema).max(500),
     fetchedAt: z.iso.datetime({ offset: true, local: true }),
+    npmSupported: z.boolean().default(false),
     installations: z.array(installedPluginSchema).max(500).optional(),
     installationError: z.string().optional(),
   }),
@@ -587,11 +691,9 @@ export const directorySecuritySearchRpc = defineRpc({
 })
 
 /**
- * Attachment searches always read the default catalog: Paseo calls the search
- * contract with `{ query }` only, and a server handler cannot read its own
- * settings document (PluginServerContext exposes registerSettings/handle/
- * registerProvider, and its context is just `paseo`). A host that overrides
- * directoryUrl therefore still gets paseo.cafe results in the composer.
+ * Attachment searches remain host-scoped. Paseo 0.9 lets the server read the
+ * registered settings document; Paseo 0.8 handlers pass no override and retain
+ * the production/environment fallback.
  */
 export const directoryAttachments = defineAttachmentSource({
   id: "paseo-plugins",
@@ -633,12 +735,17 @@ export const directoryInstallRpc = defineRpc({
   name: "directory.install",
   input: z.object({
     repo: z.string(),
-    path: z.string().optional(),
-    ref: z
+    package: z
       .string()
-      .max(255)
-      .refine(isValidCatalogRef, "Expected a valid Git branch")
+      .max(214)
+      .refine(isValidCatalogPackage, "Expected a valid npm package name")
       .optional(),
+    version: z
+      .string()
+      .max(CATALOG_VERSION_MAX_LENGTH)
+      .refine(isValidCatalogVersion, "Expected a semantic version")
+      .optional(),
+    path: z.string().optional(),
     expectedCommit: z
       .string()
       .regex(/^[0-9a-f]{40}$/i)
@@ -663,7 +770,16 @@ export const directoryUpdateRpc = defineRpc({
         .max(255)
         .refine(isValidCatalogRef, "Expected a valid Git branch")
         .optional(),
+      package: z
+        .string()
+        .max(214)
+        .refine(isValidCatalogPackage, "Expected a valid npm package name")
+        .optional(),
       version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
+      commit: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/i)
+        .optional(),
     }),
   }),
   output: z.object({
@@ -683,12 +799,22 @@ export const getInstallRef = getCatalogInstallRef
 
 export const getRepositoryOwner = getCatalogRepositoryOwner
 export function getInstallCommand(
-  entry: Pick<DirectoryEntry, "repo" | "path" | "repoMeta">
+  entry: Pick<
+    DirectoryEntry,
+    "repo" | "path" | "package" | "version" | "security"
+  >,
+  npmSupported = false
 ): string | undefined {
+  if (npmSupported && entry.package) {
+    return entry.version
+      ? getCatalogNpmInstallCommand(entry.package, entry.version)
+      : undefined
+  }
+  if (!entry.security?.commit) return undefined
   return getCatalogInstallCommand({
     repo: entry.repo,
     path: entry.path,
-    ref: entry.repoMeta?.defaultBranch,
+    ref: entry.security?.commit,
   })
 }
 
@@ -773,16 +899,25 @@ function pluginPathFromCheckout(path: string): string | undefined {
 }
 
 export function findInstallations(
-  entry: Pick<DirectoryEntry, "id" | "repo" | "path">,
+  entry: Pick<DirectoryEntry, "id" | "repo" | "path" | "package">,
   installations: readonly InstalledPlugin[]
 ): InstalledPlugin[] {
   const expectedRepo = entry.repo.toLowerCase()
   const expectedPath = normalizePluginPath(entry.path)
   return installations.filter((installation) => {
     if (installation.source === "directory") return installation.id === entry.id
+    if (installation.source === "npm") {
+      return Boolean(
+        entry.package && installation.packageName === entry.package
+      )
+    }
+    const installedPath =
+      installation.management === "reviewed"
+        ? normalizePluginPath(installation.pluginPath)
+        : pluginPathFromCheckout(installation.path)
     return (
       githubRepoFromRemote(installation.remote) === expectedRepo &&
-      pluginPathFromCheckout(installation.path) === expectedPath
+      installedPath === expectedPath
     )
   })
 }

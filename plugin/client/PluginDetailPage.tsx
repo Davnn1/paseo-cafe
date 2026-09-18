@@ -18,13 +18,14 @@ import {
   DIRECTORY_PLATFORM_LABELS,
   formatDirectoryDate,
   formatDirectoryVersion,
+  getInstallationStateLabel,
   getInstallCommand,
-  getInstallRef,
   getReportPluginIssueUrl,
   getRepositoryOwner,
   getRepositoryUrl,
   getRepositoryUrlAtRef,
   getSiteUrl,
+  getUpdateReviewDetails,
   HEALTH_KEYS,
   HEALTH_LABELS,
   isOfficialPlugin,
@@ -38,6 +39,7 @@ interface PluginDetailPageProps {
   entry: DirectoryEntry
   theme: PluginTheme
   compact: boolean
+  npmSupported: boolean
   installations: readonly InstalledPlugin[]
   inventoryAvailable: boolean
   installing: boolean
@@ -55,19 +57,11 @@ function formatDate(iso: string | undefined): string | undefined {
   return iso ? formatDirectoryDate(iso) : undefined
 }
 
-function installationStateLabel(installation: InstalledPlugin): string {
-  if (installation.source === "directory") return "Installed locally"
-  if (installation.updateState === "available") return "Update available"
-  if (installation.updateState === "current") return "Up to date"
-  if (installation.updateState === "pinned") return "Pinned"
-  if (installation.updateState === "diverged") return "Source diverged"
-  return "Update status unavailable"
-}
-
 export function PluginDetailPage({
   entry,
   theme,
   compact,
+  npmSupported,
   installations,
   inventoryAvailable,
   installing,
@@ -450,12 +444,14 @@ export function PluginDetailPage({
     [theme, compact, installing, updatingId]
   )
 
-  const command = getInstallCommand(entry)
-  const installRef = getInstallRef(entry.repoMeta?.defaultBranch)
+  const command = getInstallCommand(entry, npmSupported)
   const repositoryUrl = getRepositoryUrl(entry)
   const updateRepositoryUrl = confirmingUpdate?.latestCommit
     ? getRepositoryUrlAtRef(entry, confirmingUpdate.latestCommit)
     : repositoryUrl
+  const updateReview = confirmingUpdate
+    ? getUpdateReviewDetails(confirmingUpdate, entry)
+    : null
   const repositoryOwner = getRepositoryOwner(entry.repo)
   const ownerMetadataMatchesRepository =
     entry.owner?.login?.toLowerCase() === repositoryOwner.toLowerCase()
@@ -481,7 +477,8 @@ export function PluginDetailPage({
   const hasCaveatsSection =
     entry.platforms.length > 0 || entry.caveats.length > 0 || !!limitationsText
   const health = entry.health
-  const security = entry.security
+  const installingFromNpm = Boolean(npmSupported && entry.package)
+  const security = installingFromNpm ? entry.npmSecurity : entry.security
   const securityStatus = security?.status ?? "unknown"
   const securityAttestation =
     security && (security.status === "passed" || security.status === "failed")
@@ -521,10 +518,11 @@ export function PluginDetailPage({
         }`
   const catalogScannedDate = formatDate(entry.scannedAt)
   const securityScannedDate = formatDate(securityAttestation?.scannedAt)
-  const securityReportUrl = securityAttestation?.reportUrl
-  const missingAttestationBranch =
-    securityAttestation?.commit !== undefined && installRef === undefined
-  const installable = command !== undefined && !missingAttestationBranch
+  const securityReportUrl = installingFromNpm
+    ? undefined
+    : entry.security?.reportUrl
+  const securityCommit = installingFromNpm ? undefined : entry.security?.commit
+  const installable = command !== undefined
   const actionPending = installing || updatingId !== null
   const reportPluginUrl = getReportPluginIssueUrl(entry)
   const actionError = installations.length > 0 ? updateError : installError
@@ -854,10 +852,13 @@ export function PluginDetailPage({
               return (
                 <View key={installation.id} style={styles.installationCard}>
                   <Text style={styles.installationTitle}>
-                    {installationStateLabel(installation)} · {installation.id}
+                    {getInstallationStateLabel(installation)} ·{" "}
+                    {installation.id}
                   </Text>
                   <Text selectable style={styles.metaText}>
-                    {installation.remote ?? installation.path}
+                    {installation.remote ??
+                      installation.packageName ??
+                      installation.path}
                     {installation.ref ? ` · ${installation.ref}` : ""}
                     {installation.commit
                       ? ` · ${installation.commit.slice(0, 12)}`
@@ -945,9 +946,8 @@ export function PluginDetailPage({
         {inventoryAvailable && installations.length === 0 && !installable ? (
           <View accessibilityRole="alert" style={styles.errorBox}>
             <Text style={styles.errorText}>
-              {missingAttestationBranch
-                ? "This security-attested listing lacks valid branch metadata. Refresh or update the catalog before installing."
-                : "This listing has an invalid repository or plugin subpath and cannot be installed."}
+              Exact install target unavailable. Refresh after the next
+              successful catalog scan.
             </Text>
           </View>
         ) : null}
@@ -1040,10 +1040,7 @@ export function PluginDetailPage({
                 </Text>
                 <Text selectable style={styles.alertBody}>
                   Scanned {securityScannedDate ?? "Unknown"}
-                  {securityAttestation.commit
-                    ? ` at commit ${securityAttestation.commit}`
-                    : ""}
-                  .
+                  {securityCommit ? ` at commit ${securityCommit}` : ""}.
                 </Text>
                 {securityReportUrl ? (
                   <Pressable
@@ -1135,11 +1132,16 @@ export function PluginDetailPage({
           </View>
           <View style={styles.section}>
             <Text style={styles.label}>Catalog status</Text>
-            {securityAttestation?.commit && installRef ? (
+            {installingFromNpm ? (
               <Text style={styles.modalText}>
-                Before installation, Paseo Cafe verifies that {installRef} still
-                points to scanned commit{" "}
-                {securityAttestation.commit.slice(0, 12)}.
+                Catalog package: {entry.package}@{entry.version}. Paseo resolves
+                it through this host&apos;s npm configuration.
+              </Text>
+            ) : null}
+            {!installingFromNpm && securityCommit ? (
+              <Text style={styles.modalText}>
+                Paseo Cafe installs the exact scanned commit{" "}
+                {securityCommit.slice(0, 12)}.
               </Text>
             ) : null}
             {catalogScannedDate ? (
@@ -1245,22 +1247,17 @@ export function PluginDetailPage({
         <Modal.Content contentContainerStyle={styles.modalBody}>
           <Text style={styles.modalTitle}>{confirmingUpdate?.id}</Text>
           <Text selectable style={styles.modalText}>
-            {confirmingUpdate?.remote}
-            {confirmingUpdate?.ref ? ` · ${confirmingUpdate.ref}` : ""}
+            {updateReview?.identity}
           </Text>
           <Text selectable style={styles.modalText}>
-            {confirmingUpdate?.commit?.slice(0, 12)} →{" "}
-            {confirmingUpdate?.latestCommit?.slice(0, 12)}
+            {updateReview?.revision}
           </Text>
           <Text style={styles.modalText}>
             Updating replaces trusted, unsandboxed plugin code on this Paseo
             host. Review the source before continuing.
           </Text>
-          {confirmingUpdate?.latestCommit ? (
-            <Text style={styles.modalText}>
-              Review commit {confirmingUpdate.latestCommit.slice(0, 12)} before
-              updating.
-            </Text>
+          {updateReview ? (
+            <Text style={styles.modalText}>{updateReview.review}</Text>
           ) : null}
           <View style={styles.actionsRow}>
             <Pressable

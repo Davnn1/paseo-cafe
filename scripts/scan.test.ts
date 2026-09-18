@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { PluginSecurity } from "../src/lib/plugin-schema"
 import {
   isFullyScanned,
+  loadPublishedNpmSecurityCatalog,
   loadPublishedSecurityCatalog,
+  npmReleaseIsReady,
   readRegistryAddedAt,
   renderPluginsRedirect,
   renderRobotsTxt,
@@ -107,6 +109,40 @@ describe("securityForRevision", () => {
     })
   })
 })
+describe("npm release promotion", () => {
+  const release = {
+    package: "@acme/example",
+    version: "1.2.3",
+    integrity: `sha512-${"b".repeat(86)}`,
+    resolved: "https://registry.npmjs.org/@acme/example/-/example-1.2.3.tgz",
+  }
+  const security = {
+    package: release.package,
+    status: "passed" as const,
+    blockingFindings: 0,
+    advisoryFindings: 0,
+    version: release.version,
+    integrity: release.integrity,
+  }
+
+  it("requires Git, npm, integrity, and security to agree", () => {
+    expect(npmReleaseIsReady(release, "1.2.3", security)).toBe(true)
+    expect(npmReleaseIsReady(release, "1.2.2", security)).toBe(false)
+    expect(
+      npmReleaseIsReady(release, "1.2.3", {
+        ...security,
+        integrity: `sha512-${"c".repeat(86)}`,
+      })
+    ).toBe(false)
+    expect(
+      npmReleaseIsReady(release, "1.2.3", {
+        ...security,
+        status: "failed",
+      })
+    ).toBe(false)
+    expect(npmReleaseIsReady(release, "1.2.3", undefined)).toBe(false)
+  })
+})
 
 describe("loadPublishedSecurityCatalog", () => {
   it("loads the canonical scanner artifact and maps unavailable to unknown", () => {
@@ -126,6 +162,37 @@ describe("loadPublishedSecurityCatalog", () => {
         advisoryFindings: 0,
         scannedAt: SCANNED_AT,
         commit: REVISION,
+      },
+    })
+  })
+  it("loads npm security only for its exact published artifact", () => {
+    const root = temporaryDirectory()
+    const artifactPath = join(root, "plugin-security-results.json")
+    writeFileSync(
+      artifactPath,
+      JSON.stringify(
+        scannerArtifact({
+          npm: {
+            package: "@acme/example",
+            version: "1.2.3",
+            integrity: `sha512-${"b".repeat(86)}`,
+            scannedAt: SCANNED_AT,
+            status: "passed",
+            blockingFindings: 0,
+            advisoryFindings: 1,
+            coverage: { files: 3, bytes: 128 },
+            buildCommands: [],
+            findings: [],
+          },
+        })
+      )
+    )
+
+    expect(loadPublishedNpmSecurityCatalog(artifactPath)).toMatchObject({
+      example: {
+        package: "@acme/example",
+        version: "1.2.3",
+        status: "passed",
       },
     })
   })

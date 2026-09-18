@@ -28,7 +28,6 @@ import {
   directoryUpdateRpc,
   directoryUpdateStatusRpc,
   findInstallations,
-  getInstallRef,
   isDefaultDirectoryBrowseView,
   isDirectoryAddedAtKnown,
   normalizeDirectoryCategories,
@@ -257,6 +256,7 @@ function StatusFilterRow({
 type DirectoryListResult = {
   plugins: readonly DirectoryEntry[]
   fetchedAt: string
+  npmSupported: boolean
   installations?: readonly InstalledPlugin[]
   installationError?: string
 }
@@ -595,12 +595,12 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
     mutationFn: (entry: DirectoryEntry): Promise<InstallResult> => {
       setInstallingId(entry.id)
       setInstallFailure(null)
-      const ref = getInstallRef(entry.repoMeta?.defaultBranch)
       return installPlugin({
         repo: entry.repo,
+        package: entry.package,
+        version: entry.version,
         path: entry.path,
-        ref,
-        expectedCommit: ref ? entry.security?.commit : undefined,
+        expectedCommit: entry.security?.commit,
       }) as Promise<InstallResult>
     },
     onSuccess: async (result: InstallResult, entry: DirectoryEntry) => {
@@ -648,6 +648,8 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
           path: entry.path,
           version: entry.version,
           ref: entry.repoMeta?.defaultBranch,
+          package: entry.package,
+          commit: entry.security?.commit,
         },
       }) as Promise<UpdateResult>
     },
@@ -733,6 +735,7 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
       directoryQuery.data?.installations ??
       [])
     : []
+  const npmSupported = directoryQuery.data?.npmSupported ?? false
   const installationByEntryId = useMemo(
     (): Map<string, InstalledPlugin[]> =>
       new Map<string, InstalledPlugin[]>(
@@ -1050,6 +1053,7 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
         entry={detailEntry}
         theme={theme}
         compact={layout.compact}
+        npmSupported={npmSupported}
         installations={detailInstallations}
         inventoryAvailable={inventoryAvailable}
         installing={installingId === detailEntry.id}

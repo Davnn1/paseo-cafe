@@ -1,5 +1,5 @@
 import { MAX_API_README_TEXT_LENGTH } from "@/lib/directory-api"
-import { getInstallCommand } from "@/lib/install-command"
+import { getGitInstallCommand, getInstallCommand } from "@/lib/install-command"
 import type { PluginRecord } from "@/lib/plugin-schema"
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site"
 
@@ -82,6 +82,8 @@ export function renderPluginMarkdown(
   const description =
     oneLine(plugin.description, 1_000) || "No description available."
   const pluginName = oneLine(plugin.name, 200)
+  const installCommand = getInstallCommand(plugin)
+  const gitInstallCommand = getGitInstallCommand(plugin)
   const lines = [
     heading(titleLevel, pluginName),
     "",
@@ -125,8 +127,18 @@ export function renderPluginMarkdown(
     heading(sectionLevel, "Install"),
     "",
     "```sh",
-    getInstallCommand(plugin),
+    installCommand ?? "Exact install target unavailable",
     "```",
+    ...(plugin.package && gitInstallCommand
+      ? [
+          "",
+          "Paseo 0.8 GitHub fallback:",
+          "",
+          "```sh",
+          gitInstallCommand,
+          "```",
+        ]
+      : []),
     "",
     heading(sectionLevel, "Caveats"),
     "",
@@ -146,10 +158,27 @@ export function renderPluginMarkdown(
     `- Typecheck script: ${plugin.health.hasTypecheckScript ? "present" : "not detected"}`
   )
 
+  if (plugin.package) {
+    lines.push(
+      "",
+      heading(sectionLevel, "npm artifact security scan"),
+      "",
+      `- Status: ${plugin.npmSecurity?.status ?? "unknown"}`,
+      `- Package: ${plugin.package}`,
+      `- Version: ${plugin.npm?.version ?? "unavailable"}`,
+      `- Integrity: ${plugin.npm?.integrity ?? "unavailable"}`,
+      `- Blocking findings: ${plugin.npmSecurity?.blockingFindings ?? "unknown"}`,
+      `- Advisory findings: ${plugin.npmSecurity?.advisoryFindings ?? "unknown"}`
+    )
+  }
+
   if (plugin.security?.status && plugin.security.status !== "unknown") {
     lines.push(
       "",
-      heading(sectionLevel, "Security scan"),
+      heading(
+        sectionLevel,
+        plugin.package ? "Git fallback security scan" : "Security scan"
+      ),
       "",
       `- Status: ${plugin.security.status}`,
       `- Blocking findings: ${plugin.security.blockingFindings}`,
