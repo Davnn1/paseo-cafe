@@ -6,6 +6,7 @@ import {
   type PluginRecord,
   pluginHealthSchema,
   pluginNpmMetadataSchema,
+  pluginNpmPreviewMetadataSchema,
   pluginNpmSecuritySchema,
   pluginThemePreviewSchema,
 } from "@/lib/plugin-schema"
@@ -43,6 +44,7 @@ export const directoryPluginSchema = z.object({
     .refine(isValidCatalogPackage, "Invalid npm package name")
     .optional(),
   npm: pluginNpmMetadataSchema.optional(),
+  npmPreview: pluginNpmPreviewMetadataSchema.optional(),
   url: httpUrlSchema.max(2_048),
   name: z.string().max(200),
   description: z.string().max(CATALOG_DESCRIPTION_MAX_LENGTH),
@@ -85,6 +87,7 @@ export const directoryPluginSchema = z.object({
     })
     .optional(),
   npmSecurity: pluginNpmSecuritySchema.optional(),
+  npmPreviewSecurity: pluginNpmSecuritySchema.optional(),
   images: z.array(directoryImageUrlSchema).max(32),
   themes: z
     .array(pluginThemePreviewSchema)
@@ -190,6 +193,15 @@ export function projectPluginForDirectory(
     if (previous === undefined) delete projected[key]
     else projected[key] = previous
     return false
+  }
+
+  if (plugin.npmPreview && plugin.npmPreviewSecurity) {
+    projected.npmPreview = plugin.npmPreview
+    projected.npmPreviewSecurity = plugin.npmPreviewSecurity
+    if (serializedBytes(projected) > MAX_API_PLUGIN_BYTES) {
+      delete projected.npmPreview
+      delete projected.npmPreviewSecurity
+    }
   }
 
   addIfItFits("author", plugin.author && boundedString(plugin.author, 200))
