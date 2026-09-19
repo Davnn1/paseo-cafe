@@ -6,6 +6,7 @@ import type { DirectoryEntry, InstalledPlugin } from "../shared/directory"
 import {
   DIRECTORY_CATEGORY_LABELS,
   DIRECTORY_PLATFORM_LABELS,
+  directoryDescriptionNodes,
   formatDirectoryCompactCount,
   formatDirectoryDownloads,
   formatDirectoryVersion,
@@ -15,6 +16,7 @@ import {
   hasCompleteDirectoryNpmMetrics,
   normalizeDirectoryCategory,
 } from "../shared/directory"
+import { InlineMarkdown } from "./InlineMarkdown"
 import { CAFE_CONTROL_RADIUS, CAFE_MONO_FONT } from "./visual"
 
 interface PluginRowProps {
@@ -224,6 +226,7 @@ export function PluginRow({
         ? "1 caveat"
         : `${entry.caveats.length} caveats`
       : undefined
+  const descriptionNodes = directoryDescriptionNodes(entry)
 
   return (
     <Pressable
@@ -288,10 +291,14 @@ export function PluginRow({
           </View>
         ) : null}
       </View>
-      {entry.description ? (
-        <Text style={styles.description} numberOfLines={2}>
-          {entry.description}
-        </Text>
+      {descriptionNodes.length > 0 ? (
+        <InlineMarkdown
+          nodes={descriptionNodes}
+          theme={theme}
+          style={styles.description}
+          links="text"
+          numberOfLines={2}
+        />
       ) : null}
       {hasTagsRow ? (
         <View style={styles.tagsRow}>

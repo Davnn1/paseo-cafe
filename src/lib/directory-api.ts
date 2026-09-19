@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { isTrustedRemoteImageUrl } from "@/lib/images"
 import {
+  inlineMarkdownNodeSchema,
   normalizePluginVersion,
   type PluginRecord,
   pluginHealthSchema,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/plugin-schema"
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site"
 import {
+  CATALOG_DESCRIPTION_MAX_LENGTH,
   CATALOG_THEME_MAX_PER_PLUGIN,
   CATALOG_VERSION_MAX_LENGTH,
   isValidCatalogPackage,
@@ -43,7 +45,8 @@ export const directoryPluginSchema = z.object({
   npm: pluginNpmMetadataSchema.optional(),
   url: httpUrlSchema.max(2_048),
   name: z.string().max(200),
-  description: z.string().max(1_000),
+  description: z.string().max(CATALOG_DESCRIPTION_MAX_LENGTH),
+  descriptionNodes: z.array(inlineMarkdownNodeSchema).optional(),
   version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
   author: z.string().max(200).optional(),
   license: z.string().max(100).optional(),
@@ -51,6 +54,7 @@ export const directoryPluginSchema = z.object({
   categories: z.array(z.string().max(100)).max(32),
   platforms: z.array(z.string().max(100)).max(32),
   caveats: z.array(z.string().max(1_000)).max(64),
+  caveatNodes: z.array(z.array(inlineMarkdownNodeSchema)).max(64).optional(),
   manifest: z.record(z.string(), z.unknown()).optional(),
   repoMeta: z
     .object({
@@ -157,7 +161,10 @@ export function projectPluginForDirectory(
     ...(plugin.package ? { package: plugin.package } : {}),
     ...(plugin.npm ? { npm: plugin.npm } : {}),
     name: boundedString(plugin.name, 200),
-    description: boundedString(plugin.description, 1_000),
+    description: boundedString(
+      plugin.description,
+      CATALOG_DESCRIPTION_MAX_LENGTH
+    ),
     categories: [],
     platforms: [],
     caveats: [],
@@ -175,14 +182,14 @@ export function projectPluginForDirectory(
       : {}),
   }
 
-  const addIfItFits = (key: string, value: unknown) => {
-    if (value === undefined) return
+  const addIfItFits = (key: string, value: unknown): boolean => {
+    if (value === undefined) return false
     const previous = projected[key]
     projected[key] = value
-    if (serializedBytes(projected) > MAX_API_PLUGIN_BYTES) {
-      if (previous === undefined) delete projected[key]
-      else projected[key] = previous
-    }
+    if (serializedBytes(projected) <= MAX_API_PLUGIN_BYTES) return true
+    if (previous === undefined) delete projected[key]
+    else projected[key] = previous
+    return false
   }
 
   addIfItFits("author", plugin.author && boundedString(plugin.author, 200))
@@ -200,10 +207,15 @@ export function projectPluginForDirectory(
     "platforms",
     plugin.platforms.slice(0, 32).map((value) => boundedString(value, 100))
   )
-  addIfItFits(
-    "caveats",
-    plugin.caveats.slice(0, 64).map((value) => boundedString(value, 1_000))
-  )
+  addIfItFits("descriptionNodes", plugin.descriptionNodes)
+  const caveats = plugin.caveats
+    .slice(0, 64)
+    .map((value) => boundedString(value, 1_000))
+  if (addIfItFits("caveats", caveats)) {
+    // Parsed caveats are useful only beside the raw strings the renderers
+    // iterate. If they do not fit, consumers deliberately fall back to raw.
+    addIfItFits("caveatNodes", plugin.caveatNodes.slice(0, caveats.length))
+  }
   addIfItFits("manifest", plugin.manifest)
   addIfItFits(
     "repoMeta",

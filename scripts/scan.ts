@@ -25,12 +25,15 @@ import {
 } from "node:fs"
 import { basename, join } from "node:path"
 import { z } from "zod"
+import { CATALOG_DESCRIPTION_MAX_LENGTH } from "../plugin/shared/catalog.ts"
+import { inlineMarkdownToPlainText } from "../plugin/shared/inline-markdown.ts"
 import {
   extractReadmeImages,
   isTrustedRemoteImageUrl,
   MAX_README_IMAGES,
   resolveGitHubAssetImages,
 } from "../src/lib/images.ts"
+import { parseInlineMarkdown } from "../src/lib/inline-markdown.ts"
 import { renderMarkdownToHtml } from "../src/lib/markdown.ts"
 import type {
   PluginNpmSecurity,
@@ -344,9 +347,11 @@ export async function scanOne(
     url: `https://github.com/${entry.repo}`,
     name: id,
     description: "",
+    descriptionNodes: [],
     categories: entry.categories,
     platforms: entry.platforms,
     caveats: entry.caveats,
+    caveatNodes: entry.caveats.map(parseInlineMarkdown),
     health: {
       manifestValid: false,
       hasReadme: false,
@@ -553,6 +558,13 @@ export async function scanOne(
         })
     )
     const version = npmReady ? npmRelease?.version : gitVersion
+    // Bounded here, where a third party's text enters the catalog.
+    const description = (
+      pkg?.description ??
+      manifestDescription ??
+      firstParagraph(readme ?? "") ??
+      ""
+    ).slice(0, CATALOG_DESCRIPTION_MAX_LENGTH)
     const record: PluginRecord = {
       id,
       repo: entry.repo,
@@ -571,17 +583,16 @@ export async function scanOne(
       npmSecurity: npmReady ? candidateNpmSecurity : undefined,
       url: repositoryUrl,
       name: id,
-      description:
-        pkg?.description ??
-        manifestDescription ??
-        firstParagraph(readme ?? "") ??
-        "",
+      description,
+      // Markdown is read exactly once, here; every surface renders these.
+      descriptionNodes: parseInlineMarkdown(description),
       version,
       author: authorName(pkg?.author),
       license: repoMeta.license?.spdx_id ?? pkg?.license,
       categories: entry.categories,
       platforms: entry.platforms,
       caveats: entry.caveats,
+      caveatNodes: entry.caveats.map(parseInlineMarkdown),
       paseoVersionRequirement,
       manifest: (manifest as PluginRecord["manifest"]) ?? undefined,
       readmeText,
@@ -893,7 +904,9 @@ async function main() {
     )
     await writeOgImage(record.id, {
       title: record.name,
-      description: record.description,
+      // satori paints flat text: the plain form, and nothing at all when
+      // the description had no visible text (an image-only one, say).
+      description: inlineMarkdownToPlainText(record.descriptionNodes),
       badges: [
         ...record.platforms.map((p) => PLATFORM_LABELS[p]),
         ...record.categories,

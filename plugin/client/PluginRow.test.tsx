@@ -1,13 +1,22 @@
+import type { ReactNode } from "react"
+import * as React from "react"
 import { describe, expect, it, vi } from "vitest"
 import type { DirectoryEntry } from "../shared/directory"
 import { directoryEntrySchema } from "../shared/directory"
-import { getHealthBadge, getPluginRowPopularity } from "./PluginRow"
+import { InlineMarkdown } from "./InlineMarkdown"
+import { getHealthBadge, getPluginRowPopularity, PluginRow } from "./PluginRow"
+
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof React>()
+  return { ...actual, useMemo: (factory: () => unknown) => factory() }
+})
 
 vi.mock("@getpaseo/plugin/client/react-native", () => ({
   Icon: () => null,
 }))
 vi.mock("react-native", () => ({
   Platform: { OS: "web" },
+  Linking: { openURL: () => Promise.resolve() },
   Image: () => null,
   Pressable: () => null,
   Text: () => null,
@@ -21,6 +30,15 @@ function entryWithHealth(health: DirectoryEntry["health"]): DirectoryEntry {
     url: "https://github.com/owner/repo",
     name: "Health Test",
     health,
+  })
+}
+
+function containsElementType(node: ReactNode, type: unknown): boolean {
+  return React.Children.toArray(node).some((child) => {
+    if (!React.isValidElement<{ children?: ReactNode }>(child)) return false
+    return (
+      child.type === type || containsElementType(child.props.children, type)
+    )
   })
 }
 
@@ -38,6 +56,45 @@ describe("plugin row health badge", () => {
       text: "Health incomplete",
       color: "muted",
     })
+  })
+})
+
+describe("plugin row description", () => {
+  const theme = {
+    colors: new Proxy({}, { get: () => "#000000" }),
+  } as never
+  const baseEntry = entryWithHealth({})
+  const renderRow = (entry: DirectoryEntry) =>
+    PluginRow({
+      entry,
+      theme,
+      compact: false,
+      installations: [],
+      showAddedDate: false,
+      onPress: () => undefined,
+    })
+
+  it("omits descriptions with no projected visible content", () => {
+    const imageOnly = directoryEntrySchema.parse({
+      ...baseEntry,
+      description: "![](https://img.example/x.png)",
+      descriptionNodes: [],
+    })
+    const visible = directoryEntrySchema.parse({
+      ...baseEntry,
+      description: "**Visible**",
+      descriptionNodes: [{ type: "text", text: "Visible", strong: true }],
+    })
+    const legacy = directoryEntrySchema.parse({
+      ...baseEntry,
+      description: "Legacy raw description",
+    })
+
+    expect(containsElementType(renderRow(imageOnly), InlineMarkdown)).toBe(
+      false
+    )
+    expect(containsElementType(renderRow(visible), InlineMarkdown)).toBe(true)
+    expect(containsElementType(renderRow(legacy), InlineMarkdown)).toBe(true)
   })
 })
 

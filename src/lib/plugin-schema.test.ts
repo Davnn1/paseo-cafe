@@ -31,6 +31,8 @@ const validRecordBase = {
   url: "https://github.com/someone/deleted-repo",
   name: "gone",
   description: "",
+  descriptionNodes: [],
+  caveatNodes: [],
   categories: [],
   health: validHealth,
   images: [],
@@ -59,6 +61,8 @@ describe("pluginRecordSchema", () => {
       url: "https://github.com/mcowger/paseo-plugins/tree/main/subagent-activity",
       name: "subagent-activity",
       description: "Monitors managed descendants.",
+      descriptionNodes: [],
+      caveatNodes: [],
       version: "0.0.0",
       license: "MIT",
       categories: ["monitoring"],
@@ -100,6 +104,42 @@ describe("pluginRecordSchema", () => {
     expect(result.readmeText).toBeUndefined()
     expect(result.readmeHtml).toBeUndefined()
     expect(result.security).toBeUndefined()
+  })
+
+  it("rejects unsafe or invisible rendered links", () => {
+    for (const descriptionNodes of [
+      [
+        {
+          type: "link" as const,
+          href: "javascript:alert(1)",
+          children: [{ type: "text" as const, text: "open" }],
+        },
+      ],
+      [
+        {
+          type: "link" as const,
+          href: "https://example.com",
+          children: [{ type: "text" as const, text: "\u200B" }],
+        },
+      ],
+    ]) {
+      expect(
+        pluginRecordSchema.safeParse({
+          ...validRecordBase,
+          descriptionNodes,
+        }).success
+      ).toBe(false)
+    }
+  })
+
+  it("requires rendered caveats to align with raw caveats", () => {
+    expect(
+      pluginRecordSchema.safeParse({
+        ...validRecordBase,
+        caveats: [],
+        caveatNodes: [[{ type: "text", text: "hidden" }]],
+      }).success
+    ).toBe(false)
   })
 
   it("accepts http(s)-only security report URLs", () => {
@@ -175,6 +215,8 @@ describe("pluginRecordSchema", () => {
         url: "https://github.com/someone/deleted-repo",
         name: "gone",
         description: "",
+        descriptionNodes: [],
+        caveatNodes: [],
         categories: [],
         health: validHealth,
         security,
@@ -192,6 +234,8 @@ describe("pluginRecordSchema", () => {
       url: "https://github.com/someone/deleted-repo",
       name: "gone",
       description: "",
+      descriptionNodes: [],
+      caveatNodes: [],
       categories: [],
       health: {
         manifestValid: false,
@@ -215,6 +259,8 @@ describe("pluginRecordSchema", () => {
       url: "https://github.com/someone/deleted-repo",
       name: "gone",
       description: "",
+      descriptionNodes: [],
+      caveatNodes: [],
       categories: [],
       health: validHealth,
       images: [],
@@ -232,6 +278,8 @@ describe("pluginRecordSchema", () => {
       url: "https://github.com/gpambrozio/paseo-plugins/tree/main/launchd-jobs",
       name: "launchd-jobs",
       description: "Schedule launchd jobs from Paseo.",
+      descriptionNodes: [],
+      caveatNodes: [[{ type: "text", text: "Requires a login session" }]],
       categories: ["automation"],
       platforms: ["macos"],
       caveats: ["Requires a login session"],
@@ -251,6 +299,8 @@ describe("pluginRecordSchema", () => {
       url: "https://github.com/owner/repo",
       name: "bad",
       description: "",
+      descriptionNodes: [],
+      caveatNodes: [],
       categories: [],
       manifest: { fn: () => "not serializable" },
       health: validHealth,

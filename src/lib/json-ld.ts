@@ -1,6 +1,7 @@
 import type { PluginRecord } from "@/lib/plugin-schema"
 import { PLATFORM_LABELS } from "@/lib/registry-schema"
 import { SITE_URL } from "@/lib/site"
+import { inlineMarkdownToPlainText } from "../../plugin/shared/inline-markdown"
 
 /**
  * schema.org SoftwareApplication structured data for a plugin's detail
@@ -13,7 +14,9 @@ export function pluginJsonLd(plugin: PluginRecord) {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: plugin.name,
-    description: plugin.description || undefined,
+    // Structured data is read, not rendered: the plain form, or nothing.
+    description:
+      inlineMarkdownToPlainText(plugin.descriptionNodes) || undefined,
     url: `${SITE_URL}/plugins/${plugin.id}`,
     image: plugin.images[0] ?? `${SITE_URL}/og/${plugin.id}.png`,
     applicationCategory: "DeveloperApplication",

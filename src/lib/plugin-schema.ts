@@ -9,6 +9,10 @@ import {
   isValidCatalogPackage,
   isValidCatalogThemeColor,
 } from "../../plugin/shared/catalog"
+import {
+  hasVisibleInlineText,
+  safeInlineHref,
+} from "../../plugin/shared/inline-markdown"
 
 /**
  * The enriched, generated record for one plugin. Never hand-authored — the
@@ -137,6 +141,38 @@ export const pluginNpmMetadataSchema = z.object({
   downloadsLast30Days: z.number().int().nonnegative().optional(),
 })
 
+/**
+ * The allowlisted rendering of a description or caveat — see
+ * plugin/shared/inline-markdown.ts. Produced once by the scan
+ * (src/lib/inline-markdown.ts); every surface renders it or flattens it,
+ * none of them parse the raw markdown string.
+ */
+const inlineMarkdownTextNodeSchema = z.object({
+  type: z.literal("text"),
+  text: z.string(),
+  code: z.boolean().optional(),
+  strong: z.boolean().optional(),
+  emphasis: z.boolean().optional(),
+})
+export const inlineMarkdownNodeSchema = z.discriminatedUnion("type", [
+  inlineMarkdownTextNodeSchema,
+  z.object({
+    type: z.literal("link"),
+    href: z
+      .string()
+      .refine(
+        (value) => safeInlineHref(value) !== undefined,
+        "Expected a safe absolute inline link"
+      ),
+    children: z
+      .array(inlineMarkdownTextNodeSchema)
+      .refine(
+        (children) =>
+          children.some((child) => hasVisibleInlineText(child.text)),
+        "Expected a visible inline link label"
+      ),
+  }),
+])
 const themeHexColorSchema = z.string().refine(isValidCatalogThemeColor)
 
 export const pluginThemePreviewSchema = z.object({
@@ -164,7 +200,10 @@ export const pluginRecordSchema = z
     npm: pluginNpmMetadataSchema.optional(),
     url: z.string().url(),
     name: z.string(),
+    // The raw markdown, kept for the agent-readable documents (llms.txt, the
+    // .md listings) and search; every rendered surface uses descriptionNodes.
     description: z.string().default(""),
+    descriptionNodes: z.array(inlineMarkdownNodeSchema),
     version: z.string().max(CATALOG_VERSION_MAX_LENGTH).optional(),
     author: z.string().optional(),
     license: z.string().optional(),
@@ -174,6 +213,8 @@ export const pluginRecordSchema = z
     // fallback for whatever the author didn't declare here.
     platforms: z.array(z.enum(PLATFORMS)).default([]),
     caveats: z.array(z.string()).default([]),
+    // caveats[i] rendered; the scan keeps the two arrays the same length.
+    caveatNodes: z.array(z.array(inlineMarkdownNodeSchema)),
     // The plugin's own declared `requirements.paseo` from its paseo-plugin.json
     // (e.g. ">=0.8.0") — pulled out of `manifest` below at scan time so the
     // site/plugin can highlight it directly instead of everyone re-parsing
@@ -222,6 +263,13 @@ export const pluginRecordSchema = z
     scannedAt: z.string(),
   })
   .superRefine((plugin, ctx) => {
+    if (plugin.caveatNodes.length !== plugin.caveats.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["caveatNodes"],
+        message: "Rendered caveats must align with raw caveats",
+      })
+    }
     if (plugin.npm && plugin.package !== plugin.npm.package) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

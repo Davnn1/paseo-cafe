@@ -6,6 +6,7 @@ import {
   IconVersions,
 } from "@tabler/icons-react"
 import { Link } from "@tanstack/react-router"
+import { InlineMarkdown } from "@/components/inline-markdown"
 import { ReaderDate } from "@/components/reader-date"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -87,7 +88,11 @@ export function PluginCard({
             ) : null}
           </div>
           <CardDescription className="line-clamp-2">
-            {plugin.description || "No description available."}
+            {plugin.descriptionNodes.length > 0 ? (
+              <InlineMarkdown nodes={plugin.descriptionNodes} links="text" />
+            ) : (
+              "No description available."
+            )}
           </CardDescription>
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="sr-only">Version and health</span>
