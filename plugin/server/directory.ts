@@ -1081,13 +1081,13 @@ export function buildUpdateArgs(
     if (!targetVersion) throw new Error("npm update requires a catalog version")
     return ["plugin", "update", pluginId, "--version", targetVersion, "--json"]
   }
-  if (management === "reviewed") {
-    if (!commit || !isValidCommit(commit)) {
-      throw new Error("Reviewed plugin update requires a scanned commit")
-    }
-    return ["plugin", "update", pluginId, "--ref", commit, "--json"]
+  if (management !== "reviewed") {
+    throw new Error("Legacy Git updates cannot be pinned to a scanned commit")
   }
-  return ["plugin", "update", pluginId, "--json"]
+  if (!commit || !isValidCommit(commit)) {
+    throw new Error("Reviewed plugin update requires a scanned commit")
+  }
+  return ["plugin", "update", pluginId, "--ref", commit, "--json"]
 }
 export function parsePluginUpdateResult(
   stdout: string,
@@ -1199,6 +1199,7 @@ export async function installDirectoryPlugin(
         input.expectedPackage !== undefined ||
         input.expectedVersion !== undefined ||
         input.expectedIntegrity !== undefined ||
+        entry.security?.status !== "passed" ||
         !entry.security?.commit ||
         input.expectedCommit?.toLowerCase() !== entry.security.commit
       ) {
@@ -1298,6 +1299,7 @@ export async function updateDirectoryPlugin(
         input.expectedPackage !== undefined ||
         input.expectedVersion !== undefined ||
         input.expectedIntegrity !== undefined ||
+        entry.security?.status !== "passed" ||
         !entry.security?.commit ||
         input.expectedCommit?.toLowerCase() !== entry.security.commit
       ) {
