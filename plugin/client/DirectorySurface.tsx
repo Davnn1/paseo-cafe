@@ -14,6 +14,7 @@ import type {
   DirectoryCategory,
   DirectoryEntry,
   InstalledPlugin,
+  PendingSelfUpdate,
 } from "../shared/directory"
 import {
   compareDirectoryPopularity,
@@ -23,6 +24,7 @@ import {
   DIRECTORY_CATEGORIES,
   DIRECTORY_CATEGORY_LABELS,
   DIRECTORY_PLATFORM_LABELS,
+  directoryApplySelfUpdateRpc,
   directoryBrowseSettingsEqual,
   directoryInstallRpc,
   directoryListRpc,
@@ -40,6 +42,10 @@ import { BrandMark } from "./BrandMark"
 import { PluginDetailPage } from "./PluginDetailPage"
 import { PluginGalleryPage } from "./PluginGalleryPage"
 import { PluginRow } from "./PluginRow"
+import {
+  resolveSelfUpdateRecoveryState,
+  startPreparedSelfUpdate,
+} from "./self-update"
 import { ThemePreviewCard } from "./ThemePreviewCard"
 import { CAFE_CONTROL_RADIUS, CAFE_MONO_FONT } from "./visual"
 
@@ -290,6 +296,8 @@ type UpdateResult = {
   ok: boolean
   message: string
   updated?: boolean
+  selfUpdateToken?: string
+  selfUpdateRequestedAt?: string
 }
 
 type SortMode = DirectoryBrowseSettings["sort"]
@@ -469,6 +477,7 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
   const listDirectory = useRpc(directoryListRpc)
   const installPlugin = useRpc(directoryInstallRpc)
   const updatePlugin = useRpc(directoryUpdateRpc)
+  const applySelfUpdate = useRpc(directoryApplySelfUpdateRpc)
   const listUpdateStatus = useRpc(directoryUpdateStatusRpc)
   const settings = useSettings(directorySettings)
   const toast = useToast()
@@ -504,6 +513,12 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
     channel: ReleaseChannel
     attempts: number
   } | null>(null)
+  const reconcilingSelfUpdate = useRef<string | null>(null)
+  const unknownSelfUpdateNotice = useRef<string | null>(null)
+  const [failedSelfUpdateAttempt, setFailedSelfUpdateAttempt] = useState<
+    string | null
+  >(null)
+  const [pollSelfUpdate, setPollSelfUpdate] = useState(true)
 
   const settingsValues = settings.status === "ready" ? settings.values : null
   const settingsRevision =
@@ -644,6 +659,8 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
     // and then immediately replaced by the configured one.
     enabled: !settingsPending,
     staleTime: 60_000,
+    refetchInterval:
+      settingsValues?.pendingSelfUpdate && pollSelfUpdate ? 2_000 : false,
   })
   const inventoryAvailable = directoryQuery.data?.installations !== undefined
   const updateStatusQuery = useQuery<UpdateStatusResult>({
@@ -659,9 +676,14 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
 
   const savePreviewOptIn = async (
     installationId: string,
-    channel: ReleaseChannel
+    channel: ReleaseChannel,
+    pendingSelfUpdate?: PendingSelfUpdate | null
   ): Promise<boolean> => {
     if (!settingsValues || settingsRevision === null) {
+      if (pendingSelfUpdate) {
+        await reloadSettings().catch(() => undefined)
+        return false
+      }
       if (channel === "stable") return true
       pendingPreviewPreference.current = {
         installationId,
@@ -677,19 +699,107 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
       channel
     )
     const saved = await saveSettings(
-      { ...settingsValues, previewOptIns },
+      {
+        ...settingsValues,
+        previewOptIns,
+        pendingSelfUpdate:
+          pendingSelfUpdate === undefined
+            ? settingsValues.pendingSelfUpdate
+            : pendingSelfUpdate,
+      },
       settingsRevision
     )
     if (!saved) {
-      pendingPreviewPreference.current = {
-        installationId,
-        channel,
-        attempts: 0,
+      if (!pendingSelfUpdate) {
+        pendingPreviewPreference.current = {
+          installationId,
+          channel,
+          attempts: 0,
+        }
       }
       await reloadSettings()
     }
     return saved
   }
+
+  useEffect(() => {
+    const requestId = settingsValues?.pendingSelfUpdate?.requestedAt
+    if (!requestId) return
+    unknownSelfUpdateNotice.current = null
+    setPollSelfUpdate(true)
+  }, [settingsValues?.pendingSelfUpdate?.requestedAt])
+
+  useEffect(() => {
+    const pending = settingsValues?.pendingSelfUpdate
+    const installations = directoryQuery.data?.installations ?? []
+    const checkedAt =
+      Math.max(directoryQuery.dataUpdatedAt, directoryQuery.errorUpdatedAt) ||
+      Date.now()
+    if (
+      !pending ||
+      settingsRevision === null ||
+      settingsSaving ||
+      reconcilingSelfUpdate.current === pending.requestedAt
+    ) {
+      return
+    }
+    const recoveryState = resolveSelfUpdateRecoveryState(
+      pending,
+      installations,
+      failedSelfUpdateAttempt,
+      checkedAt
+    )
+    if (recoveryState === "pending") return
+    if (recoveryState === "unknown") {
+      if (unknownSelfUpdateNotice.current === pending.requestedAt) return
+      unknownSelfUpdateNotice.current = pending.requestedAt
+      setPollSelfUpdate(false)
+      const message = `Paseo Cafe has not reached ${pending.targetRevision} yet. The outcome is unconfirmed; reopen Cafe later or review the plugin logs.`
+      setUpdateFailure({ entryId: "paseo-cafe", message })
+      toast.error(message)
+      return
+    }
+
+    reconcilingSelfUpdate.current = pending.requestedAt
+    void saveSettings(
+      { ...settingsValues, pendingSelfUpdate: null },
+      settingsRevision
+    )
+      .then((saved) => {
+        if (!saved) {
+          void reloadSettings()
+          return
+        }
+        if (failedSelfUpdateAttempt === pending.requestedAt) {
+          setFailedSelfUpdateAttempt(null)
+        }
+        if (recoveryState === "succeeded") {
+          toast.show(`Paseo Cafe updated to ${pending.targetRevision}.`, {
+            variant: "success",
+          })
+          return
+        }
+        const message = `Paseo Cafe did not reach ${pending.targetRevision}. Review the plugin logs and retry.`
+        setUpdateFailure({ entryId: "paseo-cafe", message })
+        toast.error(message)
+      })
+      .finally(() => {
+        if (reconcilingSelfUpdate.current === pending.requestedAt) {
+          reconcilingSelfUpdate.current = null
+        }
+      })
+  }, [
+    directoryQuery.dataUpdatedAt,
+    directoryQuery.errorUpdatedAt,
+    failedSelfUpdateAttempt,
+    directoryQuery.data?.installations,
+    reloadSettings,
+    saveSettings,
+    settingsRevision,
+    settingsSaving,
+    settingsValues,
+    toast,
+  ])
 
   const installMutation = useMutation<
     InstallResult,
@@ -777,7 +887,85 @@ export function DirectorySurface({ theme, layout }: PluginSurfaceProps) {
         toast.error(`Couldn't update ${entry.name}. See details below.`)
         return
       }
-      const preferenceSaved = await savePreviewOptIn(installation.id, channel)
+      const release = channel === "preview" ? entry.npmPreview : entry.npm
+      const targetRevision =
+        installation.source === "npm"
+          ? release?.version
+          : entry.security?.commit
+      const pendingSelfUpdate =
+        result.selfUpdateToken &&
+        result.selfUpdateRequestedAt &&
+        targetRevision &&
+        installation.source !== "directory"
+          ? {
+              installationId: installation.id,
+              source: installation.source,
+              targetRevision,
+              requestedAt: result.selfUpdateRequestedAt,
+            }
+          : undefined
+      if (result.selfUpdateToken && !pendingSelfUpdate) {
+        const message = "The self-update target revision is unavailable."
+        setUpdateFailure({ entryId: entry.id, message })
+        toast.error(
+          `Couldn't start the ${entry.name} update. See details below.`
+        )
+        return
+      }
+      let preferenceSaved = false
+      try {
+        preferenceSaved = await savePreviewOptIn(
+          installation.id,
+          channel,
+          pendingSelfUpdate
+        )
+      } catch (error) {
+        if (result.selfUpdateToken) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Couldn't save the update channel preference."
+          setUpdateFailure({ entryId: entry.id, message })
+          toast.error(
+            `Couldn't save the ${channel} channel; the ${entry.name} update was not started.`
+          )
+          return
+        }
+      }
+      if (result.selfUpdateToken) {
+        if (!pendingSelfUpdate) return
+        if (!preferenceSaved) {
+          const message = `Couldn't save the ${channel} channel preference.`
+          setUpdateFailure({ entryId: entry.id, message })
+          toast.error(
+            `Couldn't save the ${channel} channel; the ${entry.name} update was not started.`
+          )
+          return
+        }
+        try {
+          const handoff = await startPreparedSelfUpdate(
+            applySelfUpdate,
+            result.selfUpdateToken
+          )
+          toast.show(
+            handoff === "accepted"
+              ? "Paseo Cafe update started. It will reload automatically."
+              : "Paseo Cafe update is already being reconciled.",
+            { variant: "success" }
+          )
+        } catch (error) {
+          setFailedSelfUpdateAttempt(pendingSelfUpdate.requestedAt)
+          setUpdateFailure({
+            entryId: entry.id,
+            message:
+              error instanceof Error ? error.message : "Self-update failed",
+          })
+          toast.error(
+            `Couldn't start the ${entry.name} update. See details below.`
+          )
+        }
+        return
+      }
       if (!preferenceSaved) {
         toast.error(
           `Updated ${entry.name}; Cafe will retry saving the ${channel} channel preference.`
