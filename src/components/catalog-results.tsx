@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router"
 import { PluginGrid } from "@/components/plugin-grid"
 import { Button } from "@/components/ui/button"
 import type { CatalogSearch } from "@/lib/catalog-search"
-import { sortLabels } from "@/lib/catalog-search"
+import { dateBadgeForSort, sortLabels } from "@/lib/catalog-search"
 import type { PluginRecord } from "@/lib/plugin-schema"
 
 interface CatalogResultsProps {
@@ -15,6 +15,10 @@ interface CatalogResultsProps {
   totalCount: number
 }
 
+/**
+ * The paginated "All plugins" section below the highlight sections, including
+ * the empty state and the prev/next controls.
+ */
 export function CatalogResults({
   plugins,
   search,
@@ -50,7 +54,7 @@ export function CatalogResults({
           </p>
         </div>
       </div>
-      <PluginGrid plugins={plugins} showAddedDate={search.sort === "added"} />
+      <PluginGrid plugins={plugins} dateBadge={dateBadgeForSort(search.sort)} />
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <p className="text-foreground/50 text-sm" aria-live="polite">
           Showing {pageStart + 1}–{pageEnd} of {totalCount} · Page {page} of{" "}

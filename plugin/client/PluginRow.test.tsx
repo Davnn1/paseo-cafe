@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from "vitest"
 import type { DirectoryEntry } from "../shared/directory"
 import { directoryEntrySchema } from "../shared/directory"
 import { InlineMarkdown } from "./InlineMarkdown"
-import { getHealthBadge, getPluginRowPopularity, PluginRow } from "./PluginRow"
+import {
+  getHealthBadge,
+  getPluginRowPopularity,
+  PluginRow,
+  type PluginRowDateBadge,
+} from "./PluginRow"
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof React>()
@@ -23,6 +28,7 @@ vi.mock("react-native", () => ({
   View: () => null,
 }))
 
+/** A schema-valid entry carrying only the health block under test. */
 function entryWithHealth(health: DirectoryEntry["health"]): DirectoryEntry {
   return directoryEntrySchema.parse({
     id: "health-test",
@@ -33,6 +39,18 @@ function entryWithHealth(health: DirectoryEntry["health"]): DirectoryEntry {
   })
 }
 
+/** Every string rendered anywhere in an element tree, depth first. */
+function collectText(node: ReactNode, into: string[] = []): string[] {
+  for (const child of React.Children.toArray(node)) {
+    if (typeof child === "string") into.push(child)
+    else if (React.isValidElement<{ children?: ReactNode }>(child)) {
+      collectText(child.props.children, into)
+    }
+  }
+  return into
+}
+
+/** Whether an element of the given component type appears in the tree. */
 function containsElementType(node: ReactNode, type: unknown): boolean {
   return React.Children.toArray(node).some((child) => {
     if (!React.isValidElement<{ children?: ReactNode }>(child)) return false
@@ -70,7 +88,6 @@ describe("plugin row description", () => {
       theme,
       compact: false,
       installations: [],
-      showAddedDate: false,
       onPress: () => undefined,
     })
 
@@ -151,5 +168,74 @@ describe("plugin row popularity", () => {
       text: "2k",
       accessibilityLabel: "2000 GitHub stars",
     })
+  })
+})
+
+describe("plugin row date badge", () => {
+  const theme = {
+    colors: new Proxy({}, { get: () => "#000000" }),
+  } as never
+  const npmEntry = directoryEntrySchema.parse({
+    id: "date-test",
+    repo: "owner/repo",
+    url: "https://github.com/owner/repo",
+    name: "Date Test",
+    health: {},
+    // Listed long before the release the recency sort ranks it by.
+    addedAt: "2026-01-05T00:00:00Z",
+    package: "@acme/date-test",
+    version: "1.0.0",
+    npm: {
+      package: "@acme/date-test",
+      version: "1.0.0",
+      integrity: `sha512-${"a".repeat(86)}`,
+      publishedAt: "2026-09-01T00:00:00Z",
+      downloadsLast30Days: 5,
+    },
+    npmSecurity: {
+      status: "passed",
+      blockingFindings: 0,
+      advisoryFindings: 0,
+      version: "1.0.0",
+      integrity: `sha512-${"a".repeat(86)}`,
+    },
+  })
+  const badgeText = (entry: DirectoryEntry, dateBadge?: PluginRowDateBadge) =>
+    collectText(
+      PluginRow({
+        entry,
+        theme,
+        compact: false,
+        installations: [],
+        dateBadge,
+        onPress: () => undefined,
+      })
+    ).find((text) => /^(Added|Published) /.test(text))
+
+  it("shows the npm release date when ordered by recency", () => {
+    expect(badgeText(npmEntry, "recency")).toMatch(/^Published /)
+  })
+
+  // Mirrors the website's PluginCard: the row must report the date it is
+  // actually ordered by, not the one it happens to have.
+  it("shows the listing date for an npm plugin when ordered by listing date", () => {
+    expect(badgeText(npmEntry, "added")).toMatch(/^Added /)
+  })
+
+  it("falls back to the listing date for a Git-only plugin under recency", () => {
+    const gitOnly = directoryEntrySchema.parse({
+      id: "git-only",
+      repo: "owner/repo",
+      url: "https://github.com/owner/repo",
+      name: "Git Only",
+      health: {},
+      addedAt: "2026-01-05T00:00:00Z",
+    })
+
+    expect(badgeText(gitOnly, "recency")).toMatch(/^Added /)
+  })
+
+  it("shows no date when the list is not ordered by one", () => {
+    expect(badgeText(npmEntry)).toBeUndefined()
   })
 })
